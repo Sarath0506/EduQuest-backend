@@ -11,10 +11,13 @@ const CourseProgress = require('../models/CourseProgress');
 exports.capturePayment = async (req, res) => {
     const { courses } = req.body;
     const userId = req.user.id;
-    
 
-    // Validate input
+    console.log("Received request to capture payment.");
+    console.log("Courses received:", courses);
+    console.log("User ID:", userId);
+
     if (!Array.isArray(courses) || courses.length === 0) {
+        console.warn("Validation failed: courses is not a valid non-empty array.");
         return res.status(400).json({
             success: false,
             message: 'Courses must be a non-empty array.'
@@ -24,8 +27,8 @@ exports.capturePayment = async (req, res) => {
     let totalAmount = 0;
     let uId;
 
-    // Validate userId
     if (!mongoose.Types.ObjectId.isValid(userId)) {
+        console.warn("Validation failed: Invalid user ID format.");
         return res.status(400).json({
             success: false,
             message: 'Invalid user ID.'
@@ -34,11 +37,17 @@ exports.capturePayment = async (req, res) => {
         uId = new mongoose.Types.ObjectId(userId);
     }
 
-    // Validate each course and calculate total amount
     try {
         const coursesData = await Course.find({ _id: { $in: courses } });
+        console.log("Fetched courses from DB:", coursesData.map(c => ({
+            id: c._id,
+            name: c.courseName,
+            price: c.price,
+            studentsEnrolled: c.studentsEnrolled.length
+        })));
 
         if (coursesData.length !== courses.length) {
+            console.warn("Mismatch in number of courses found vs requested.");
             return res.status(404).json({
                 success: false,
                 message: 'One or more courses not found.'
@@ -46,82 +55,82 @@ exports.capturePayment = async (req, res) => {
         }
 
         for (const course of coursesData) {
-            // Check if user is already enrolled using .some() and .equals()
+            console.log(`Checking course: ${course.courseName} (${course._id})`);
+
             if (course.studentsEnrolled.some(enrolledId => enrolledId.equals(uId))) {
+                console.warn(`User is already enrolled in course: ${course.courseName}`);
                 return res.status(400).json({
                     success: false,
                     message: `Student already enrolled in course: ${course.courseName}`
                 });
             }
 
-            // Validate course price
             if (typeof course.price !== 'number' || course.price <= 0) {
+                console.error("Invalid course price:", {
+                    courseId: course._id,
+                    courseName: course.courseName,
+                    price: course.price
+                });
                 return res.status(400).json({
                     success: false,
-                    message: `Invalid price for course: ${course.courseName}`
+                    message: `Invalid price for course: ${course.courseName || course._id}`
                 });
             }
 
             totalAmount += course.price;
         }
 
-        console.log(`Total Amount Calculated: ${totalAmount}`);
+        console.log(`Total Amount Calculated: ₹${totalAmount}`);
     } catch (error) {
-        console.error('Error fetching courses:', error);
+        console.error('Error fetching courses or validating data:', error);
         return res.status(500).json({
             success: false,
             message: 'Server error while fetching courses.'
         });
     }
 
-    // Ensure totalAmount is positive
     if (totalAmount <= 0) {
+        console.warn("Total calculated amount is zero or negative.");
         return res.status(400).json({
             success: false,
             message: 'Total amount must be greater than zero.'
         });
     }
 
-    // Generate a unique receipt using UUID
     const receiptId = uuidv4();
+    console.log("Creating Razorpay order with receipt ID:", receiptId);
 
     const options = {
-        amount: Math.round(totalAmount * 100), // Amount in paise as integer
+        amount: Math.round(totalAmount * 100),
         currency: "INR",
-        receipt: receiptId, // Unique receipt ID
+        receipt: receiptId,
     };
-
-    console.log(`Order Options: ${JSON.stringify(options)}`);
 
     try {
         const paymentResponse = await instance.orders.create(options);
-        console.log("Payment Response:", paymentResponse);
+        console.log("Razorpay order created successfully:", paymentResponse);
 
         return res.status(200).json({
             success: true,
             order: paymentResponse
         });
     } catch (error) {
-        console.error('Error creating payment order:', error);
+        console.error('Error creating Razorpay payment order:', error);
 
-        // Enhanced Error Logging
         if (error.response) {
-            // The request was made, and the server responded with a status code outside the 2xx range
             console.error('Razorpay Response Error:', error.response.data);
             return res.status(error.response.status).json({
                 success: false,
                 message: error.response.data.description || 'Could not initiate payment order.'
             });
         } else if (error.request) {
-            // The request was made, but no response was received
             console.error('No response received from Razorpay:', error.request);
             return res.status(502).json({
                 success: false,
                 message: 'Bad Gateway: No response from payment gateway.'
             });
         } else {
-            // Something happened in setting up the request
-            console.error('Error setting up Razorpay request:', error.message);
+            console.error('Unknown error setting up Razorpay request:', error.message);
             return res.status(500).json({
                 success: false,
                 message: 'Could not initiate payment order.'
@@ -129,6 +138,7 @@ exports.capturePayment = async (req, res) => {
         }
     }
 };
+
 
 // Verify Signature
 exports.verifyPayment = async (req, res) => {
